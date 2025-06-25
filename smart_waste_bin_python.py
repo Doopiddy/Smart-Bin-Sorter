@@ -1,23 +1,15 @@
-import streamlit as st
-import numpy as np
 import cv2
+import numpy as np
+import requests
+import time
 from ultralytics import YOLO
 from PIL import Image
-import requests
 import json
-import time
-import tensorflow as tf
 from threading import Thread
 import queue
-import base64
-from io import BytesIO
 
 # Load YOLOv10 model
-@st.cache_resource
-def load_model():
-    return YOLO("yolov10n.pt")
-
-model = load_model()
+model = YOLO("yolov10n.pt")
 
 # Comprehensive waste classification lists
 biodegradable_items = [
@@ -92,16 +84,14 @@ SERVO_CENTER_URL = f"{ESP32_URL}/servo/center"
 AIR_QUALITY_URL = f"{ESP32_URL}/air-quality"
 CAPTURE_URL = f"{ESP32_URL}/capture"
 
-# Blynk Configuration
-BLYNK_AUTH_TOKEN = "YourBlynkAuthToken"
-BLYNK_SERVER = "blynk.cloud"
-
 class WasteBinController:
     def __init__(self):
         self.processing_queue = queue.Queue()
         self.result_queue = queue.Queue()
         self.air_quality_data = []
         self.classification_history = []
+        self.camera_active = False
+        self.display_gui = True
     
     def classify_waste(self, labels, confidences):
         """Enhanced waste classification with confidence scoring"""
@@ -140,18 +130,18 @@ class WasteBinController:
         try:
             if waste_type == "biodegradable":
                 response = requests.get(SERVO_LEFT_URL, timeout=5)
-                st.success("✅ Servo moved LEFT for biodegradable waste")
+                print("✅ Servo moved LEFT for biodegradable waste")
             elif waste_type == "non-biodegradable":
                 response = requests.get(SERVO_RIGHT_URL, timeout=5)
-                st.success("✅ Servo moved RIGHT for non-biodegradable waste")
+                print("✅ Servo moved RIGHT for non-biodegradable waste")
             elif waste_type == "center":
                 response = requests.get(SERVO_CENTER_URL, timeout=5)
-                st.success("✅ Servo moved to CENTER position")
+                print("✅ Servo moved to CENTER position")
             
             if response.status_code == 200:
                 return response.json()
         except requests.exceptions.RequestException as e:
-            st.error(f"❌ Failed to communicate with ESP32: {e}")
+            print(f"❌ Failed to communicate with ESP32: {e}")
             return None
     
     def get_air_quality(self):
@@ -167,7 +157,7 @@ class WasteBinController:
                 })
                 return data
         except requests.exceptions.RequestException as e:
-            st.error(f"❌ Failed to get air quality: {e}")
+            print(f"❌ Failed to get air quality: {e}")
             return None
     
     def capture_from_esp32(self):
@@ -179,239 +169,163 @@ class WasteBinController:
                 image = cv2.imdecode(image_array, cv2.IMREAD_COLOR)
                 return cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         except requests.exceptions.RequestException as e:
-            st.error(f"❌ Failed to capture from ESP32 camera: {e}")
+            print(f"❌ Failed to capture from ESP32 camera: {e}")
             return None
-
-# Initialize controller
-controller = WasteBinController()
-
-# Streamlit UI
-st.set_page_config(page_title="Smart Waste Bin", page_icon="♻️", layout="wide")
-
-st.title("♻️ Smart Waste Bin Control System")
-st.markdown("""
-### AI-Powered Waste Classification & Monitoring
-This system uses YOLOv10 and computer vision to classify waste automatically, 
-controls servo mechanisms for waste sorting, and monitors air quality in real-time.
-""")
-
-# Create main layout
-col1, col2, col3 = st.columns([2, 1, 1])
-
-with col1:
-    st.subheader("🎯 Waste Classification")
     
-    # Image input options
-    input_method = st.radio("Choose input method:", 
-                           ["Upload Image", "Capture from ESP32 Camera", "Use Webcam"])
-    
-    image = None
-    
-    if input_method == "Upload Image":
-        uploaded_file = st.file_uploader("Upload waste image", type=["jpg", "jpeg", "png"])
-        if uploaded_file:
-            image = Image.open(uploaded_file).convert("RGB")
-    
-    elif input_method == "Capture from ESP32 Camera":
-        if st.button("📷 Capture from ESP32", type="primary"):
-            with st.spinner("Capturing from ESP32 camera..."):
-                image = controller.capture_from_esp32()
-                if image is not None:
-                    image = Image.fromarray(image)
-    
-    elif input_method == "Use Webcam":
-        # This would require additional setup for webcam access
-        st.info("Webcam functionality requires additional configuration")
-
-with col2:
-    st.subheader("🌡️ Air Quality Monitor")
-    
-    if st.button("Check Air Quality", type="secondary"):
-        air_data = controller.get_air_quality()
-        if air_data:
-            air_quality = air_data.get('air_quality', 0)
-            status = air_data.get('status', 'unknown')
-            
-            # Display air quality metrics
-            st.metric("Air Quality", f"{air_quality} ppm")
-            
-            if status == "alert":
-                st.error("⚠️ HIGH ODOR LEVELS!")
-                st.markdown("🚨 **Action Required**: Empty the bin soon")
-            else:
-                st.success("✅ Air quality normal")
-            
-            # Progress bar for air quality
-            progress_value = min(100, air_quality / 10)
-            st.progress(progress_value / 100)
-    
-    # Air quality history chart
-    if controller.air_quality_data:
-        st.subheader("📈 Air Quality Trend")
-        recent_data = controller.air_quality_data[-10:]  # Last 10 readings
-        st.line_chart([d['value'] for d in recent_data])
-
-with col3:
-    st.subheader("🎛️ Manual Controls")
-    
-    st.markdown("**Servo Control:**")
-    if st.button("⬅️ Biodegradable", use_container_width=True):
-        controller.send_servo_command("biodegradable")
-    
-    if st.button("➡️ Non-Biodegradable", use_container_width=True):
-        controller.send_servo_command("non-biodegradable")
-    
-    if st.button("🎯 Center Position", use_container_width=True):
-        controller.send_servo_command("center")
-    
-    st.markdown("**System Status:**")
-    st.json({
-        "ESP32 Connection": "🟢 Connected",
-        "Camera Status": "🟢 Active",
-        "Servo Status": "🟢 Ready",
-        "Air Sensor": "🟢 Monitoring"
-    })
-
-# Process image if available
-if image is not None:
-    st.subheader("📸 Captured Image")
-    st.image(image, caption="Waste to be classified", use_column_width=True)
-    
-    # Convert PIL image to numpy array for YOLO
-    image_np = np.array(image)
-    
-    # Run YOLO detection
-    with st.spinner("🔍 Analyzing waste with AI..."):
-        results = model(image_np)
-    
-    # Process results
-    if results and len(results) > 0:
-        r = results[0]
+    def process_image(self, image):
+        """Process image and classify waste"""
+        # Convert PIL image to numpy array for YOLO
+        image_np = np.array(image)
         
-        if r.boxes is not None and len(r.boxes) > 0:
-            # Extract labels and confidences
-            labels = [r.names[int(cls)] for cls in r.boxes.cls]
-            confidences = r.boxes.conf.tolist()
+        # Run YOLO detection
+        results = model(image_np)
+        
+        # Process results
+        if results and len(results) > 0:
+            r = results[0]
             
-            # Classify waste
-            bio_items, non_bio_items, hazardous_items = controller.classify_waste(labels, confidences)
-            
-            # Display results
-            st.subheader("🎯 Classification Results")
-            
-            # Create tabs for different waste categories
-            tab1, tab2, tab3, tab4 = st.tabs(["📊 Summary", "🌱 Biodegradable", "🔴 Non-Biodegradable", "⚠️ Hazardous"])
-            
-            with tab1:
-                col_bio, col_non_bio, col_hazard = st.columns(3)
+            if r.boxes is not None and len(r.boxes) > 0:
+                # Extract labels and confidences
+                labels = [r.names[int(cls)] for cls in r.boxes.cls]
+                confidences = r.boxes.conf.tolist()
                 
-                with col_bio:
-                    st.metric("Biodegradable Items", len(bio_items))
-                with col_non_bio:
-                    st.metric("Non-Biodegradable Items", len(non_bio_items))
-                with col_hazard:
-                    st.metric("Hazardous Items", len(hazardous_items))
-            
-            with tab2:
-                if bio_items:
-                    for item in bio_items:
-                        st.success(f"✅ {item['name']} (Confidence: {item['confidence']:.2f})")
-                else:
-                    st.info("No biodegradable items detected")
-            
-            with tab3:
-                if non_bio_items:
-                    for item in non_bio_items:
-                        st.error(f"❌ {item['name']} (Confidence: {item['confidence']:.2f})")
-                else:
-                    st.info("No non-biodegradable items detected")
-            
-            with tab4:
-                if hazardous_items:
-                    for item in hazardous_items:
-                        st.warning(f"⚠️ {item['name']} (Confidence: {item['confidence']:.2f})")
-                    st.error("🚨 HAZARDOUS WASTE DETECTED - Requires special handling!")
-                else:
-                    st.info("No hazardous items detected")
-            
-            # Determine dominant waste type and control servo
-            total_items = len(bio_items) + len(non_bio_items) + len(hazardous_items)
-            
-            if total_items > 0:
-                st.subheader("🤖 Automatic Sorting Decision")
+                # Classify waste
+                bio_items, non_bio_items, hazardous_items = self.classify_waste(labels, confidences)
                 
-                if len(hazardous_items) > 0:
-                    st.error("⚠️ HAZARDOUS WASTE DETECTED - Manual handling required!")
-                    st.info("Please remove hazardous items and dispose of them separately.")
-                elif len(bio_items) > len(non_bio_items):
-                    st.success("🌱 Dominant waste type: **BIODEGRADABLE**")
-                    if st.button("🚀 Activate Biodegradable Sorting", type="primary"):
-                        controller.send_servo_command("biodegradable")
-                        st.balloons()
-                elif len(non_bio_items) > len(bio_items):
-                    st.warning("🔴 Dominant waste type: **NON-BIODEGRADABLE**")
-                    if st.button("🚀 Activate Non-Biodegradable Sorting", type="primary"):
-                        controller.send_servo_command("non-biodegradable")
-                        st.balloons()
+                # Print results
+                print("\n=== Classification Results ===")
+                print(f"Biodegradable Items: {len(bio_items)}")
+                print(f"Non-Biodegradable Items: {len(non_bio_items)}")
+                print(f"Hazardous Items: {len(hazardous_items)}")
+                
+                # Determine dominant waste type and control servo
+                total_items = len(bio_items) + len(non_bio_items) + len(hazardous_items)
+                
+                if total_items > 0:
+                    print("\n=== Sorting Decision ===")
+                    
+                    if len(hazardous_items) > 0:
+                        print("⚠️ HAZARDOUS WASTE DETECTED - Manual handling required!")
+                    elif len(bio_items) > len(non_bio_items):
+                        print("🌱 Dominant waste type: BIODEGRADABLE")
+                        self.send_servo_command("biodegradable")
+                    elif len(non_bio_items) > len(bio_items):
+                        print("🔴 Dominant waste type: NON-BIODEGRADABLE")
+                        self.send_servo_command("non-biodegradable")
+                    else:
+                        print("⚖️ Equal amounts detected - Manual sorting recommended")
+                
+                # Return annotated image
+                annotated_frame = r.plot()
+                return annotated_frame
+            
+        return None
+    
+    def run_camera_loop(self):
+        """Main camera processing loop"""
+        print("Starting camera processing loop...")
+        
+        # Initialize camera (use 0 for default webcam)
+        cap = cv2.VideoCapture(0)
+        
+        while self.camera_active:
+            ret, frame = cap.read()
+            if not ret:
+                print("Failed to capture frame")
+                continue
+            
+            # Display camera feed
+            cv2.imshow("Smart Waste Bin - Camera Feed", frame)
+            
+            # Check for key presses
+            key = cv2.waitKey(1) & 0xFF
+            
+            # Press 'c' to capture and classify
+            if key == ord('c'):
+                print("\nCapturing image for classification...")
+                image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                pil_image = Image.fromarray(image_rgb)
+                
+                # Process the image
+                annotated_image = self.process_image(pil_image)
+                
+                if annotated_image is not None:
+                    cv2.imshow("Classification Results", annotated_image)
+            
+            # Press 'a' to check air quality
+            elif key == ord('a'):
+                print("\nChecking air quality...")
+                air_data = self.get_air_quality()
+                if air_data:
+                    air_quality = air_data.get('air_quality', 0)
+                    status = air_data.get('status', 'unknown')
+                    
+                    print(f"Air Quality: {air_quality} ppm")
+                    if status == "alert":
+                        print("⚠️ HIGH ODOR LEVELS! Please empty the bin soon")
+                    else:
+                        print("✅ Air quality normal")
+            
+            # Press 'q' to quit
+            elif key == ord('q'):
+                break
+        
+        # Clean up
+        cap.release()
+        cv2.destroyAllWindows()
+        print("Camera processing stopped")
+
+    def manual_control(self):
+        """Manual control interface"""
+        print("\n=== Manual Controls ===")
+        print("1. Move to Biodegradable (Left)")
+        print("2. Move to Non-Biodegradable (Right)")
+        print("3. Move to Center")
+        print("4. Check Air Quality")
+        print("5. Exit")
+        
+        choice = input("Enter your choice (1-5): ")
+        
+        if choice == "1":
+            self.send_servo_command("biodegradable")
+        elif choice == "2":
+            self.send_servo_command("non-biodegradable")
+        elif choice == "3":
+            self.send_servo_command("center")
+        elif choice == "4":
+            air_data = self.get_air_quality()
+            if air_data:
+                air_quality = air_data.get('air_quality', 0)
+                status = air_data.get('status', 'unknown')
+                print(f"\nAir Quality: {air_quality} ppm")
+                if status == "alert":
+                    print("⚠️ HIGH ODOR LEVELS! Please empty the bin soon")
                 else:
-                    st.info("⚖️ Equal amounts detected - Manual sorting recommended")
-            
-            # Display annotated image
-            st.subheader("🔍 Detection Visualization")
-            annotated_frame = r.plot()
-            st.image(annotated_frame, caption="AI Detection Results", use_column_width=True)
-            
+                    print("✅ Air quality normal")
+        elif choice == "5":
+            self.camera_active = False
+            self.display_gui = False
         else:
-            st.warning("No objects detected in the image. Please try with a clearer image.")
-    else:
-        st.error("Failed to process the image. Please try again.")
+            print("Invalid choice")
 
-# Sidebar with additional information
-st.sidebar.header("📊 System Statistics")
+    def run(self):
+        """Main application loop"""
+        print("=== Smart Waste Bin System ===")
+        print("Initializing system...")
+        
+        # Start camera thread
+        self.camera_active = True
+        camera_thread = Thread(target=self.run_camera_loop)
+        camera_thread.start()
+        
+        # Main loop
+        while self.display_gui:
+            self.manual_control()
+        
+        # Wait for camera thread to finish
+        camera_thread.join()
+        print("System shutdown complete")
 
-# Classification history
-if controller.classification_history:
-    st.sidebar.subheader("Recent Classifications")
-    for item in controller.classification_history[-5:]:
-        st.sidebar.text(f"• {item}")
-
-# System information
-st.sidebar.subheader("ℹ️ About")
-st.sidebar.info("""
-**Smart Waste Bin System v2.0**
-
-🎯 **Features:**
-- AI-powered waste classification
-- Real-time air quality monitoring  
-- Automatic servo-based sorting
-- ESP32 camera integration
-- Blynk IoT connectivity
-
-🔧 **Technology Stack:**
-- YOLOv10 for object detection
-- ESP32 with OV2640 camera
-- MQ135 air quality sensor
-- Servo motor for sorting
-- Streamlit web interface
-""")
-
-# Required libraries information
-st.sidebar.subheader("📚 Required Libraries")
-st.sidebar.code("""
-# Python libraries:
-pip install streamlit
-pip install ultralytics
-pip install opencv-python
-pip install tensorflow
-pip install requests
-pip install pillow
-pip install numpy
-
-# Arduino libraries:
-- WiFi
-- BlynkSimpleEsp32
-- ESP32Servo
-- ArduinoJson
-- WebServer
-- esp_camera
-""")
+if __name__ == "__main__":
+    controller = WasteBinController()
+    controller.run()
