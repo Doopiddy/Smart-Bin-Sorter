@@ -48,12 +48,20 @@ char pass[] = "YourWiFiPassword";
 #define SERVO_LEFT        45   // Biodegradable
 #define SERVO_RIGHT       135  // Non-biodegradable
 
+// MQ-135 Gas Sensor Constants
+#define VCC               3.3   // ESP32 supply voltage
+#define RL                10.0  // Load resistance in kΩ
+#define RS_AIR            20.0  // Sensor resistance in clean air (kΩ) - calibrate this value
+#define CALIBRATION_SAMPLES 50  // Number of samples for calibration
+
 Servo wasteServo;
 WebServer server(80);
 
 // Sensor variables
-int airQualityThreshold = 800;
-int currentAirQuality = 0;
+float airQualityThreshold = 100.0;  // Changed to float for odor score
+float currentAirQuality = 0;
+float currentOdorScore = 0;
+float rsAirCalibrated = RS_AIR;  // Will be calibrated during setup
 bool alertSent = false;
 bool objectDetected = false;
 unsigned long lastDetectionTime = 0;
@@ -66,6 +74,7 @@ const unsigned long detectionDelay = 2000; // 2 seconds
 #define V3 3  // Alert status
 #define V4 4  // Camera trigger
 #define V5 5  // Object detection status
+#define V6 6  // Odor score
 
 void setup() {
   Serial.begin(115200);
@@ -120,6 +129,15 @@ void setup() {
     Serial.println("Camera initialized successfully");
   }
   
+  // Calibrate MQ-135 sensor in clean air
+  Serial.println("Calibrating MQ-135 sensor in clean air...");
+  Serial.println("Please ensure the sensor is in clean air for 10 seconds");
+  delay(10000); // Wait for sensor to stabilize
+  
+  rsAirCalibrated = calibrateMQ135();
+  Serial.println("Calibration complete!");
+  Serial.println("Rs in clean air: " + String(rsAirCalibrated) + " kΩ");
+  
   // Connect to WiFi and Blynk
   WiFi.begin(ssid, pass);
   while (WiFi.status() != WL_CONNECTED) {
@@ -141,6 +159,7 @@ void setup() {
   server.on("/air-quality", handleAirQuality);
   server.on("/distance", handleDistanceCheck);
   server.on("/status", handleStatus);
+  server.on("/calibrate", handleCalibrate);
   server.begin();
   
   // Initial LED indication
@@ -157,6 +176,7 @@ void setup() {
   Serial.println("- Red LED: GPIO" + String(LED_RED));
   Serial.println("- Ultrasonic Trig: GPIO" + String(ULTRASONIC_TRIG));
   Serial.println("- Ultrasonic Echo: GPIO" + String(ULTRASONIC_ECHO));
+  Serial.println("MQ-135 Sensor Calibrated - Rs(air): " + String(rsAirCalibrated) + " kΩ");
 }
 
 void loop() {
@@ -187,24 +207,27 @@ void loop() {
     resetToCenter();
   }
   
-  // Read air quality sensor
-  currentAirQuality = analogRead(AIR_QUALITY_PIN);
-  currentAirQuality = map(currentAirQuality, 0, 4095, 0, 1000); // Convert to approximate ppm
+  // Read and calculate air quality using MQ-135 formulas
+  currentAirQuality = readMQ135();
+  currentOdorScore = calculateOdorScore(currentAirQuality);
   
-  // Send air quality to Blynk
+  // Send values to Blynk
   Blynk.virtualWrite(V0, currentAirQuality);
+  Blynk.virtualWrite(V6, currentOdorScore);
   
-  // Check air quality threshold
-  if (currentAirQuality > airQualityThreshold && !alertSent) {
+  // Check odor threshold and interpret results
+  String odorLevel = getOdorLevel(currentOdorScore);
+  
+  if (currentOdorScore > airQualityThreshold && !alertSent) {
     sendAlert();
     alertSent = true;
-  } else if (currentAirQuality <= (airQualityThreshold - 50)) { // Hysteresis
+  } else if (currentOdorScore <= (airQualityThreshold - 20)) { // Hysteresis
     alertSent = false;
   }
   
-  // Update LED status based on air quality (when no object detected)
+  // Update LED status based on odor score (when no object detected)
   if (!objectDetected) {
-    if (currentAirQuality > airQualityThreshold) {
+    if (currentOdorScore > airQualityThreshold) {
       digitalWrite(LED_RED, HIGH);
       digitalWrite(LED_GREEN, LOW);
     } else {
@@ -213,7 +236,61 @@ void loop() {
     }
   }
   
+  // Print sensor readings for debugging
+  Serial.println("Rs: " + String(currentAirQuality) + " kΩ, Odor Score: " + String(currentOdorScore) + ", Level: " + odorLevel);
+  
   delay(1000); // Update every second
+}
+
+// MQ-135 sensor reading and calculation functions
+float readMQ135() {
+  int adcValue = analogRead(AIR_QUALITY_PIN);
+  float vOut = (adcValue / 4095.0) * VCC; // Convert ADC to voltage
+  
+  // Calculate sensor resistance using the formula: Rs = (Vcc - Vout) / Vout * RL
+  if (vOut == 0) vOut = 0.01; // Prevent division by zero
+  float rs = ((VCC - vOut) / vOut) * RL;
+  
+  return rs; // Return sensor resistance in kΩ
+}
+
+float calculateOdorScore(float rs) {
+  // Calculate odor score using the formula: Odor Score = (Rs_air / Rs) * 100
+  if (rs == 0) rs = 0.01; // Prevent division by zero
+  float odorScore = (rsAirCalibrated / rs) * 100.0;
+  
+  return odorScore;
+}
+
+String getOdorLevel(float odorScore) {
+  if (odorScore <= 50) {
+    return "Fresh";
+  } else if (odorScore <= 100) {
+    return "Mild";
+  } else if (odorScore <= 200) {
+    return "Strong";
+  } else {
+    return "Very Strong";
+  }
+}
+
+float calibrateMQ135() {
+  Serial.println("Taking " + String(CALIBRATION_SAMPLES) + " samples for calibration...");
+  float rsSum = 0;
+  
+  for (int i = 0; i < CALIBRATION_SAMPLES; i++) {
+    float rs = readMQ135();
+    rsSum += rs;
+    delay(100); // Small delay between readings
+    
+    if (i % 10 == 0) {
+      Serial.print(".");
+    }
+  }
+  
+  Serial.println();
+  float rsAverage = rsSum / CALIBRATION_SAMPLES;
+  return rsAverage;
 }
 
 float getDistance() {
@@ -248,11 +325,13 @@ BLYNK_WRITE(V4) {
 void handleRoot() {
   String html = "<!DOCTYPE html><html><head><title>Smart Waste Bin</title>";
   html += "<meta name='viewport' content='width=device-width, initial-scale=1'>";
-  html += "<style>body{font-family:Arial;margin:20px;} .btn{display:block;margin:10px 0;padding:10px;background:#4CAF50;color:white;text-decoration:none;border-radius:5px;text-align:center;} .status{background:#f0f0f0;padding:10px;margin:10px 0;border-radius:5px;}</style>";
+  html += "<style>body{font-family:Arial;margin:20px;} .btn{display:block;margin:10px 0;padding:10px;background:#4CAF50;color:white;text-decoration:none;border-radius:5px;text-align:center;} .status{background:#f0f0f0;padding:10px;margin:10px 0;border-radius:5px;} .odor-fresh{color:green;} .odor-mild{color:orange;} .odor-strong{color:red;} .odor-very-strong{color:darkred;font-weight:bold;}</style>";
   html += "</head><body>";
   html += "<h1>Smart Waste Bin Control Panel</h1>";
   html += "<div class='status'><strong>System Status</strong><br>";
-  html += "Air Quality: " + String(currentAirQuality) + " ppm<br>";
+  html += "Sensor Resistance: " + String(currentAirQuality) + " kΩ<br>";
+  html += "Odor Score: " + String(currentOdorScore) + "<br>";
+  html += "Odor Level: <span class='odor-" + String(getOdorLevel(currentOdorScore)).toLowerCase() + "'>" + getOdorLevel(currentOdorScore) + "</span><br>";
   html += "Distance: " + String(getDistance()) + " cm<br>";
   html += "Object: " + String(objectDetected ? "Detected" : "None") + "</div>";
   html += "<a href='/capture' class='btn'>📷 Capture Image</a>";
@@ -261,6 +340,7 @@ void handleRoot() {
   html += "<a href='/servo/center' class='btn'>⏺️ Center Position</a>";
   html += "<a href='/air-quality' class='btn'>🌬️ Air Quality JSON</a>";
   html += "<a href='/distance' class='btn'>📏 Distance Check</a>";
+  html += "<a href='/calibrate' class='btn'>🔧 Recalibrate Sensor</a>";
   html += "<a href='/status' class='btn'>📊 Full Status</a>";
   html += "</body></html>";
   server.send(200, "text/html", html);
@@ -308,10 +388,13 @@ void handleServoCenter() {
 
 void handleAirQuality() {
   DynamicJsonDocument doc(1024);
-  doc["air_quality"] = currentAirQuality;
-  doc["status"] = currentAirQuality > airQualityThreshold ? "alert" : "normal";
+  doc["sensor_resistance_kohm"] = currentAirQuality;
+  doc["odor_score"] = currentOdorScore;
+  doc["odor_level"] = getOdorLevel(currentOdorScore);
+  doc["status"] = currentOdorScore > airQualityThreshold ? "alert" : "normal";
   doc["threshold"] = airQualityThreshold;
   doc["alert_sent"] = alertSent;
+  doc["rs_air_calibrated"] = rsAirCalibrated;
   
   String response;
   serializeJson(doc, response);
@@ -330,17 +413,31 @@ void handleDistanceCheck() {
   server.send(200, "application/json", response);
 }
 
+void handleCalibrate() {
+  Serial.println("Manual calibration requested via web interface");
+  server.send(200, "text/html", "<html><body><h1>Calibrating...</h1><p>Please wait 15 seconds while the sensor calibrates in clean air.</p><script>setTimeout(function(){window.location.href='/';}, 15000);</script></body></html>");
+  
+  delay(5000); // Wait for sensor to stabilize
+  rsAirCalibrated = calibrateMQ135();
+  Serial.println("Manual calibration complete! Rs(air): " + String(rsAirCalibrated) + " kΩ");
+}
+
 void handleStatus() {
   DynamicJsonDocument doc(2048);
   doc["device_name"] = "Smart Waste Bin";
   doc["wifi_status"] = WiFi.status() == WL_CONNECTED ? "connected" : "disconnected";
   doc["ip_address"] = WiFi.localIP().toString();
-  doc["air_quality"] = currentAirQuality;
+  doc["sensor_resistance_kohm"] = currentAirQuality;
+  doc["odor_score"] = currentOdorScore;
+  doc["odor_level"] = getOdorLevel(currentOdorScore);
   doc["distance"] = getDistance();
   doc["object_detected"] = objectDetected;
   doc["servo_position"] = wasteServo.read();
   doc["alert_status"] = alertSent;
   doc["uptime_ms"] = millis();
+  doc["rs_air_calibrated"] = rsAirCalibrated;
+  doc["vcc"] = VCC;
+  doc["load_resistance_kohm"] = RL;
   
   String response;
   serializeJson(doc, response);
@@ -407,10 +504,11 @@ void sendAlert() {
     delay(300);
   }
   
-  // Send Blynk notification
-  Blynk.logEvent("air_quality_alert", "High odor levels detected! Air quality: " + String(currentAirQuality) + " ppm");
-  Blynk.virtualWrite(V3, "ALERT: High odor detected! " + String(currentAirQuality) + " ppm");
+  // Send Blynk notification with detailed odor information
+  String alertMessage = "High odor detected! Score: " + String(currentOdorScore) + " (" + getOdorLevel(currentOdorScore) + ")";
+  Blynk.logEvent("air_quality_alert", alertMessage);
+  Blynk.virtualWrite(V3, "ALERT: " + alertMessage);
   
-  Serial.println("🚨 ALERT SENT - High odor levels detected! Air quality: " + String(currentAirQuality) + " ppm");
+  Serial.println("🚨 ALERT SENT - " + alertMessage);
 }
 </lov-write>
