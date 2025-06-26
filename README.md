@@ -1,4 +1,3 @@
-# Smart-Bin-Sorter
 
 # Smart Waste Bin System - Setup and Usage Guide
 
@@ -41,19 +40,41 @@ Install these libraries in Arduino IDE:
 - ArduinoJson
 - WebServer (built-in)
 - esp_camera (built-in)
+- HTTPClient (built-in)
+
+#### ESP32 Code Structure:
+The ESP32 code is now modular with separate files:
+- `esp32_smart_waste_bin.ino` - Main program file
+- `config.h` - Configuration settings and pin definitions
+- `connectivity.h/cpp` - WiFi and Blynk connectivity
+- `sensors.h/cpp` - Sensor reading and control logic
+- `camera_client.h/cpp` - HTTP communication with camera ESP32
+- `web_server.h/cpp` - Web server endpoints
+
+#### OV2640 Camera Setup:
+Separate ESP32-CAM for camera functionality:
+- `ov2640_camera_server.ino` - Dedicated camera web server
+- Provides `/capture` endpoint for image capture
+- Runs independently from main ESP32
 
 #### Configuration:
-1. Open `esp32_smart_waste_bin.ino` in Arduino IDE
+1. Open `config.h` in Arduino IDE
 2. Update these credentials:
    ```cpp
    #define BLYNK_TEMPLATE_ID "YourTemplateID"
    #define BLYNK_AUTH_TOKEN "YourAuthToken"
+   
+   // In connectivity.cpp:
    char ssid[] = "YourWiFiSSID";
    char pass[] = "YourWiFiPassword";
+   
+   // Camera ESP32 IP (in config.h):
+   String CAMERA_ESP32_IP = "http://192.168.1.101";
    ```
 
-3. Select Board: "AI Thinker ESP32-CAM"
-4. Upload the code to ESP32
+3. Upload `esp32_smart_waste_bin.ino` to main ESP32
+4. Upload `ov2640_camera_server.ino` to ESP32-CAM
+5. Select appropriate boards for each ESP32
 
 ### 2. Python Application Setup:
 
@@ -68,14 +89,24 @@ pip install numpy
 pip install tensorflow-lite
 ```
 
+#### Python Code Structure:
+The Python application is now modular:
+- `app.py` - Main Streamlit application
+- `config.py` - Configuration settings
+- `model_manager.py` - YOLO model loading and caching
+- `waste_classifier.py` - Waste classification logic
+- `esp32_controller.py` - ESP32 communication
+- `ui_components.py` - UI rendering components
+
 #### YOLOv10 Model:
 The system uses YOLOv10n.pt model which will be automatically downloaded on first run.
 
 #### Configuration:
-1. Open `smart_waste_bin_python.py`
-2. Update ESP32 IP address:
+1. Open `config.py`
+2. Update ESP32 IP addresses:
    ```python
-   ESP32_URL = "http://192.168.1.100"  # Replace with your ESP32's IP
+   ESP32_URL = "http://192.168.1.100"  # Main ESP32 IP
+   CAMERA_ESP32_IP = "http://192.168.1.101"  # Camera ESP32 IP
    ```
 
 ### 3. Blynk App Setup:
@@ -91,7 +122,7 @@ The system uses YOLOv10n.pt model which will be automatically downloaded on firs
    - V4: Camera Trigger (Button)
 
 4. Get Template ID and Auth Token
-5. Update ESP32 code with these credentials
+5. Update `config.h` with these credentials
 
 #### Mobile App:
 1. Download Blynk app
@@ -103,14 +134,15 @@ The system uses YOLOv10n.pt model which will be automatically downloaded on firs
 
 ### Starting the System:
 
-1. **Power on ESP32**: 
-   - Connect to power source
-   - Wait for WiFi connection (check serial monitor)
-   - Note the IP address displayed
+1. **Power on Both ESP32s**: 
+   - Main ESP32: Connect to power source
+   - Camera ESP32: Connect to power source
+   - Wait for WiFi connection (check serial monitors)
+   - Note both IP addresses displayed
 
 2. **Start Python Application**:
    ```bash
-   streamlit run smart_waste_bin_python.py
+   streamlit run app.py
    ```
    - Opens web interface at http://localhost:8501
 
@@ -121,22 +153,26 @@ The system uses YOLOv10n.pt model which will be automatically downloaded on firs
 ### Operating the Waste Bin:
 
 #### Method 1 - Python Web Interface:
-1. Upload image of waste item
+1. Upload image of waste item or capture from ESP32 camera
 2. System analyzes using YOLOv10
 3. Classification results show on screen
-4. Click "Activate Bin" to move servo
+4. Click sorting buttons to move servo
 5. Monitor air quality readings
 
 #### Method 2 - Direct ESP32 Web Interface:
-Navigate to ESP32's IP address in browser:
+Navigate to main ESP32's IP address in browser:
 - `/` - Main control page
-- `/capture` - Take photo
 - `/servo/left` - Move to biodegradable position  
 - `/servo/right` - Move to non-biodegradable position
 - `/servo/center` - Return to center
 - `/air-quality` - Check current air quality
+- `/capture` - Trigger camera capture (communicates with camera ESP32)
 
-#### Method 3 - Blynk Mobile App:
+#### Method 3 - Camera ESP32 Direct Access:
+Navigate to camera ESP32's IP address:
+- `/capture` - Take photo directly from camera
+
+#### Method 4 - Blynk Mobile App:
 - View real-time air quality
 - See waste classification results
 - Control servo position manually
@@ -175,21 +211,45 @@ Navigate to ESP32's IP address in browser:
 ## Troubleshooting
 
 ### ESP32 Issues:
-- **WiFi Connection Failed**: Check SSID/password
-- **Camera Init Failed**: Check camera connections
-- **Servo Not Moving**: Verify power supply and pin connections
+- **WiFi Connection Failed**: Check SSID/password in connectivity.cpp
+- **Camera Communication Failed**: Verify camera ESP32 IP in config.h
+- **Servo Not Moving**: Check power supply and pin connections in sensors.cpp
 - **Air Quality Reading 0**: Check MQ135 sensor wiring
+- **Blynk Connection Failed**: Verify auth token in config.h
 
 ### Python Application Issues:
 - **Model Download Failed**: Check internet connection
-- **ESP32 Communication Error**: Verify IP address and network
-- **Camera Access Error**: Check camera permissions
+- **ESP32 Communication Error**: Verify IP addresses in config.py
+- **Camera Access Error**: Check camera ESP32 connectivity
 - **Module Import Error**: Install required libraries
 
 ### Blynk Issues:
-- **Device Offline**: Check ESP32 WiFi connection
+- **Device Offline**: Check main ESP32 WiFi connection
 - **No Data Updates**: Verify virtual pin configuration
 - **Notifications Not Working**: Enable notifications in app settings
+
+## File Structure
+
+### ESP32 Arduino Files:
+```
+esp32_smart_waste_bin.ino    - Main program
+config.h                     - Configuration and pin definitions
+connectivity.h/cpp           - WiFi and Blynk handling
+sensors.h/cpp               - Sensor and actuator control
+camera_client.h/cpp         - Camera communication
+web_server.h/cpp            - HTTP server endpoints
+ov2640_camera_server.ino    - Separate camera server
+```
+
+### Python Application Files:
+```
+app.py                      - Main Streamlit application
+config.py                   - Configuration settings
+model_manager.py            - YOLO model management
+waste_classifier.py         - Classification logic
+esp32_controller.py         - ESP32 communication
+ui_components.py            - UI components and displays
+```
 
 ## System Specifications
 
@@ -198,12 +258,13 @@ Navigate to ESP32's IP address in browser:
 - Servo response time: <2 seconds
 - Air quality update interval: 5 seconds
 - Image processing time: 2-5 seconds
+- Camera capture time: 1-3 seconds
 
-### Limitations:
-- Requires good lighting for accurate classification
-- Single item detection works best
-- WiFi connection required for remote features
-- Air quality sensor needs 24-48 hours warmup for accuracy
+### Network Communication:
+- Main ESP32 ↔ Python App: HTTP REST API
+- Camera ESP32 ↔ Main ESP32: HTTP requests
+- Camera ESP32 ↔ Python App: Direct HTTP capture
+- Main ESP32 ↔ Blynk: IoT cloud communication
 
 ## Maintenance
 
@@ -212,9 +273,11 @@ Navigate to ESP32's IP address in browser:
 - Calibrate air quality sensor monthly
 - Check servo mechanism for smooth operation
 - Update Python libraries periodically
+- Verify network connectivity between ESP32s
 
 ### Troubleshooting Logs:
-- ESP32: Check Arduino IDE Serial Monitor
+- ESP32 Main: Check Arduino IDE Serial Monitor
+- ESP32 Camera: Check Arduino IDE Serial Monitor  
 - Python: Check Streamlit console output
 - Blynk: Check device status in console
 
@@ -223,6 +286,7 @@ Navigate to ESP32's IP address in browser:
 - Handle hazardous waste according to local regulations
 - Keep electronics away from moisture
 - Ensure proper ventilation around air quality sensor
+- Maintain network security for ESP32 communications
 
 ## Support
 For technical issues:
@@ -230,7 +294,9 @@ For technical issues:
 2. Verify software configuration
 3. Review troubleshooting section
 4. Check component datasheets for specifications
+5. Verify network connectivity between devices
 
 ---
-System Version: 1.0
+System Version: 2.0 (Modular Architecture)
 Last Updated: 2024
+</lov-write>
